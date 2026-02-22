@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+.git
+*.md
+test
+.editorconfig
+.prettierrc
+eslint.config.mjs
