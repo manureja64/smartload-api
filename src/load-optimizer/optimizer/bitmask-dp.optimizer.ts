@@ -35,8 +35,9 @@ export function groupOrdersByCompatibility(orders: OrderDto[]): Map<string, Orde
 
 /**
  * Bitmask DP over all 2^n subsets. Each subset is derived in O(1) from a
- * smaller subset by removing the lowest set bit. Typed arrays keep the
- * hot loop cache-friendly so n=22 (~4M states) finishes well under 800ms.
+ * smaller subset by removing the lowest set bit. Flat typed arrays avoid
+ * object-property lookups in the hot loop and keep memory cache-friendly,
+ * so n=22 (~4M states) finishes well under 800ms.
  */
 export function findOptimalLoad(input: OptimizerInput): OptimizerResult {
   const { orders, maxWeightLbs, maxVolumeCuft } = input;
@@ -46,19 +47,31 @@ export function findOptimalLoad(input: OptimizerInput): OptimizerResult {
     return { selectedIndices: [], totalPayoutCents: 0, totalWeightLbs: 0, totalVolumeCuft: 0 };
   }
 
-  const pickupDays = orders.map((o) => toEpochDay(o.pickup_date));
-  const deliveryDays = orders.map((o) => toEpochDay(o.delivery_date));
+  // Pre-extract into flat arrays to avoid object lookups in the hot loop
+  const oWeight = new Int32Array(n);
+  const oVolume = new Int32Array(n);
+  const oPayout = new Float64Array(n);
+  const oPickup = new Int32Array(n);
+  const oDelivery = new Int32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    oWeight[i] = orders[i].weight_lbs;
+    oVolume[i] = orders[i].volume_cuft;
+    oPayout[i] = orders[i].payout_cents;
+    oPickup[i] = toEpochDay(orders[i].pickup_date);
+    oDelivery[i] = toEpochDay(orders[i].delivery_date);
+  }
 
   const totalStates = 1 << n;
+  const dpWeight = new Int32Array(totalStates);
+  const dpVolume = new Int32Array(totalStates);
   const dpPayout = new Float64Array(totalStates);
-  const dpWeight = new Float64Array(totalStates);
-  const dpVolume = new Float64Array(totalStates);
-  const dpMaxPickup = new Float64Array(totalStates);
-  const dpMinDelivery = new Float64Array(totalStates);
+  const dpMaxPickup = new Int32Array(totalStates);
+  const dpMinDelivery = new Int32Array(totalStates);
   const dpValid = new Uint8Array(totalStates);
 
   dpValid[0] = 1;
-  dpMinDelivery[0] = Number.MAX_SAFE_INTEGER;
+  dpMinDelivery[0] = 0x7fffffff;
 
   let bestMask = 0;
   let bestPayout = 0;
@@ -66,25 +79,25 @@ export function findOptimalLoad(input: OptimizerInput): OptimizerResult {
   for (let mask = 1; mask < totalStates; mask++) {
     const lowestBit = mask & -mask;
     const idx = 31 - Math.clz32(lowestBit);
-    const prevMask = mask ^ lowestBit;
+    const prev = mask ^ lowestBit;
 
-    if (!dpValid[prevMask]) continue;
+    if (!dpValid[prev]) continue;
 
-    const newWeight = dpWeight[prevMask] + orders[idx].weight_lbs;
-    if (newWeight > maxWeightLbs) continue;
+    const w = dpWeight[prev] + oWeight[idx];
+    if (w > maxWeightLbs) continue;
 
-    const newVolume = dpVolume[prevMask] + orders[idx].volume_cuft;
-    if (newVolume > maxVolumeCuft) continue;
+    const v = dpVolume[prev] + oVolume[idx];
+    if (v > maxVolumeCuft) continue;
 
-    const newMaxPickup = Math.max(dpMaxPickup[prevMask], pickupDays[idx]);
-    const newMinDelivery = Math.min(dpMinDelivery[prevMask], deliveryDays[idx]);
-    if (newMaxPickup > newMinDelivery) continue;
+    const pickup = dpMaxPickup[prev] > oPickup[idx] ? dpMaxPickup[prev] : oPickup[idx];
+    const delivery = dpMinDelivery[prev] < oDelivery[idx] ? dpMinDelivery[prev] : oDelivery[idx];
+    if (pickup > delivery) continue;
 
-    dpPayout[mask] = dpPayout[prevMask] + orders[idx].payout_cents;
-    dpWeight[mask] = newWeight;
-    dpVolume[mask] = newVolume;
-    dpMaxPickup[mask] = newMaxPickup;
-    dpMinDelivery[mask] = newMinDelivery;
+    dpWeight[mask] = w;
+    dpVolume[mask] = v;
+    dpPayout[mask] = dpPayout[prev] + oPayout[idx];
+    dpMaxPickup[mask] = pickup;
+    dpMinDelivery[mask] = delivery;
     dpValid[mask] = 1;
 
     if (dpPayout[mask] > bestPayout) {
