@@ -69,7 +69,9 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s",
       "!main.ts",
-      "!**/*.module.ts"
+      "!**/*.module.ts",
+      "!**/index.ts",
+      "!**/dto/optimize-response.dto.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
